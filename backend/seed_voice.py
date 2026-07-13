@@ -1,6 +1,6 @@
 """Seed VoiceLab with demo voice agents + caller scenarios (real definitions only).
 No runs are seeded — simulations come only from real relay conversations the user triggers."""
-import database as db
+import db_pg as db
 
 _AGENTS = [
     {"name": "Reservations Host", "description": "Restaurant booking voice agent.",

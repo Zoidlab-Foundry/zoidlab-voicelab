@@ -11,13 +11,14 @@ from fastapi import FastAPI, Request, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
-import database as db
+import db_pg as db
 import llm
 import voice_engine
 import exporter
 import foundry
 import jobs
 import seed_voice
+from tasks import run_sim
 from auth import session, require_pro, relay_key, entitlement
 
 
@@ -176,20 +177,11 @@ async def simulate(body: SimBody, request: Request, owner: str = Depends(require
         return db.get_run(rid, owner)
     rid = db.create_run(agent, scenario, model, body.max_turns or 6, owner, corr)
     rk = relay_key(request)
-    llm.set_relay_auth(rk)
-
-    async def runner():
-        res = await voice_engine.run(agent, scenario, model, body.max_turns, relay_key=rk)
-        try:
-            await foundry.emit_spend(res.get("usage"), resource_id=rid, feature=agent.get("name"),
-                                     correlation_id=corr, environment="development")
-        except Exception:
-            pass
-        return res
-
-    job = jobs.submit(owner, "voice_simulation", rid, runner,
-                      on_result=lambda res: db.finish_run(rid, res), timeout_s=180)
-    return {"job_id": job["id"], "run_id": rid, "status": job["status"], "run": db.get_run(rid, owner)}
+    job_id = jobs.create(owner, "voice_simulation", rid, timeout_s=180)
+    async_res = run_sim.delay(job_id, rid, agent["id"], scenario["id"], model, body.max_turns, owner, corr, rk,
+                              request.cookies.get("zb_session"))
+    jobs.set_celery(job_id, owner, async_res.id)
+    return {"job_id": job_id, "run_id": rid, "status": "queued", "run": db.get_run(rid, owner)}
 
 
 # --- jobs ---
