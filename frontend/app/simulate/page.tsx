@@ -2,7 +2,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, usd, ms } from "../../lib/api";
+import { api, usd, ms, runToCompletion } from "../../lib/api";
 import { Transcript, ScoreCard } from "../../components/Transcript";
 
 function SimInner() {
@@ -14,6 +14,7 @@ function SimInner() {
   const [scenarioId, setScenarioId] = useState(params.get("scenario") || "");
   const [maxTurns, setMaxTurns] = useState(6);
   const [running, setRunning] = useState(false);
+  const [phase, setPhase] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -29,12 +30,16 @@ function SimInner() {
 
   async function run() {
     if (!agentId || !scenarioId) return;
-    setRunning(true); setErr(null); setResult(null);
+    setRunning(true); setErr(null); setResult(null); setPhase("queued");
     try {
-      const r = await api.simulate({ agent_id: agentId, scenario_id: scenarioId, max_turns: maxTurns });
+      const r = await runToCompletion(
+        () => api.simulate({ agent_id: agentId, scenario_id: scenarioId, max_turns: maxTurns }),
+        (rid) => api.getRun(rid),
+        (s) => setPhase(s),
+      );
       setResult(r);
     } catch (e: any) { setErr(e.message || "simulation failed"); }
-    finally { setRunning(false); }
+    finally { setRunning(false); setPhase(null); }
   }
 
   return (
@@ -88,7 +93,7 @@ function SimInner() {
           </label>
           <button onClick={run} disabled={running || !agentId || !scenarioId}
             className="ml-auto rounded-lg bg-vi px-5 py-2.5 text-[13px] font-semibold text-black hover:opacity-90 disabled:opacity-40">
-            {running ? "Simulating the call…" : "Run simulation →"}
+            {running ? (phase === "running" ? "Simulating the call…" : phase === "queued" ? "Queued…" : "Working…") : "Run simulation →"}
           </button>
         </div>
         {err && <div className="mt-3 rounded-lg border border-bad/30 bg-bad/5 px-3 py-2 text-[12.5px] text-bad">{err}</div>}

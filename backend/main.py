@@ -16,6 +16,7 @@ import llm
 import voice_engine
 import exporter
 import foundry
+import jobs
 import seed_voice
 from auth import session, require_pro, relay_key, entitlement
 
@@ -23,6 +24,10 @@ from auth import session, require_pro, relay_key, entitlement
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    jobs.init()
+    interrupted = jobs.reconcile()
+    if interrupted:
+        print(f"[voicelab] reconciled {interrupted} interrupted job(s)")
     n = seed_voice.run()
     if n:
         print(f"[voicelab] seeded {n} demo agents + scenarios")
@@ -170,15 +175,40 @@ async def simulate(body: SimBody, request: Request, owner: str = Depends(require
                             "error": "TrustGate blocked: " + "; ".join(pf.get("reasons") or [])})
         return db.get_run(rid, owner)
     rid = db.create_run(agent, scenario, model, body.max_turns or 6, owner, corr)
-    llm.set_relay_auth(relay_key(request))
-    res = await voice_engine.run(agent, scenario, model, body.max_turns, relay_key=relay_key(request))
-    db.finish_run(rid, res)
-    try:
-        await foundry.emit_spend(res.get("usage"), resource_id=rid, feature=agent.get("name"),
-                                 correlation_id=corr, environment="development")
-    except Exception:
-        pass
-    return db.get_run(rid, owner)
+    rk = relay_key(request)
+    llm.set_relay_auth(rk)
+
+    async def runner():
+        res = await voice_engine.run(agent, scenario, model, body.max_turns, relay_key=rk)
+        try:
+            await foundry.emit_spend(res.get("usage"), resource_id=rid, feature=agent.get("name"),
+                                     correlation_id=corr, environment="development")
+        except Exception:
+            pass
+        return res
+
+    job = jobs.submit(owner, "voice_simulation", rid, runner,
+                      on_result=lambda res: db.finish_run(rid, res), timeout_s=180)
+    return {"job_id": job["id"], "run_id": rid, "status": job["status"], "run": db.get_run(rid, owner)}
+
+
+# --- jobs ---
+@app.get("/api/jobs/{jid}")
+def get_job(jid: str, request: Request, owner: str = Depends(require_owner)):
+    j = jobs.get(jid, owner)
+    if not j:
+        raise HTTPException(404, "not_found")
+    return j
+
+
+@app.get("/api/jobs")
+def list_jobs(request: Request, owner: str = Depends(require_owner)):
+    return {"jobs": jobs.list_jobs(owner)}
+
+
+@app.post("/api/jobs/{jid}/cancel")
+def cancel_job(jid: str, request: Request, owner: str = Depends(require_owner)):
+    return {"ok": jobs.cancel(jid, owner)}
 
 
 @app.get("/api/runs")
